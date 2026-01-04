@@ -13,6 +13,7 @@ class Cleaner:
     def __init__(self, delete_chunk_size=100):
         self.chats = []
         self.delete_chunk_size = delete_chunk_size
+        self.stats = {}
 
     @staticmethod
     def chunks(lst, n):
@@ -31,7 +32,7 @@ class Cleaner:
 
         if not chats:
             print("Личных чатов не найдено")
-            return
+            return False
 
         print("\nУдалить все твои сообщения в личных чатах:\n")
 
@@ -48,34 +49,44 @@ class Cleaner:
                 confirm = input('Напиши "I UNDERSTAND": ')
                 if confirm.upper() != "I UNDERSTAND":
                     print("Отмена")
-                    return
+                    return False
                 self.chats = chats
                 break
             elif 1 <= n <= len(chats):
                 self.chats.append(chats[n - 1])
             else:
                 print("Неверный номер")
-                return
+                return False
 
-        print("\nВыбраны чаты:")
-        for c in self.chats:
-            print("-", c.first_name or c.username)
+        return True
 
-    async def run(self):
+    async def scan_messages(self):
+        print("\nСканирование сообщений...")
+        total = 0
+
         for chat in self.chats:
-            print(f"\nОбработка чата: {chat.first_name or chat.username}")
-            message_ids = []
+            count = 0
+            async for _ in app.search_messages(chat.id, from_user="me", limit=0):
+                count += 1
+            self.stats[chat.id] = count
+            total += count
 
-            async for msg in app.search_messages(
-                chat_id=chat.id,
-                from_user="me",
-                limit=0
-            ):
-                message_ids.append(msg.id)
+            name = chat.first_name or chat.username
+            print(f"- {name}: {count}")
 
-            print(f"Найдено сообщений: {len(message_ids)}")
+        print(f"\nВСЕГО сообщений к удалению: {total}")
+        return total
 
-            for chunk in self.chunks(message_ids, self.delete_chunk_size):
+    async def delete_messages(self):
+        for chat in self.chats:
+            name = chat.first_name or chat.username
+            print(f"\nУдаление в чате: {name}")
+
+            ids = []
+            async for msg in app.search_messages(chat.id, from_user="me", limit=0):
+                ids.append(msg.id)
+
+            for chunk in self.chunks(ids, self.delete_chunk_size):
                 try:
                     await app.delete_messages(chat.id, chunk)
                 except FloodWait as e:
@@ -83,12 +94,31 @@ class Cleaner:
 
             print("Готово")
 
+    async def run(self):
+        total = await self.scan_messages()
+
+        if total == 0:
+            print("Удалять нечего")
+            return
+
+        print("\n⚠️ ВНИМАНИЕ ⚠️")
+        print("Это действие НЕОБРАТИМО.")
+        print("Сообщения будут удалены НАВСЕГДА.\n")
+
+        confirm = input('Чтобы продолжить, напиши "DELETE": ')
+        if confirm != "DELETE":
+            print("Отменено пользователем")
+            return
+
+        await self.delete_messages()
+
 
 async def main():
     async with app:
         cleaner = Cleaner()
-        await cleaner.select_private_chats()
-        await cleaner.run()
+        ok = await cleaner.select_private_chats()
+        if ok:
+            await cleaner.run()
 
 
 app.run(main())
